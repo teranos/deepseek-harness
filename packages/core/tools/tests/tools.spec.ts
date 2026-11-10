@@ -816,6 +816,82 @@ describe('ToolRuntime', () => {
     expect(postSawFrozen).toBe(true)
   })
 
+  describe('tools/pre-rewrite', () => {
+    const notice = createUserMessage({ content: [{ type: 'text', text: 'ground removed --force' }], source: { kind: 'test' } })
+    const textOf = (exec: { readonly arguments: unknown }): unknown => (exec.arguments as { text?: unknown } | undefined)?.text
+
+    it('runs the rewritten arguments and tells the model through the result contexts', async () => {
+      const ctx = await setup()
+      ctx.tools.register(echoTool)
+      ctx.on('tools/pre-rewrite', async (exec, next) => {
+        if (exec.name !== 'echo') return next()
+        return { kind: 'rewrite', arguments: { text: String(textOf(exec)).replace(' --force', '') }, notice }
+      })
+
+      const result = await executeToolFixture(ctx, {
+        signal: testToolSignal, callId: ToolCallId('c1'), name: 'echo', arguments: { text: 'push --force' },
+      })
+      expect(result.isError).toBe(false)
+      expect(result.value).toBe('push')
+      expect(result.additionalContexts).toEqual([notice])
+    })
+
+    it('shows tools/pre-execute policy the effective arguments, frozen', async () => {
+      const ctx = await setup()
+      ctx.tools.register(echoTool)
+      const seen: Array<{ text: unknown; frozen: boolean }> = []
+      ctx.on('tools/pre-rewrite', async () => ({ kind: 'rewrite', arguments: { text: 'amended' }, notice }))
+      ctx.on('tools/pre-execute', async (exec, next) => {
+        seen.push({ text: textOf(exec), frozen: Object.isFrozen(exec.arguments) })
+        return next()
+      })
+
+      await executeToolFixture(ctx, {
+        signal: testToolSignal, callId: ToolCallId('c1'), name: 'echo', arguments: { text: 'original' },
+      })
+      expect(seen).toEqual([{ text: 'amended', frozen: true }])
+    })
+
+    it('checks guards against the effective arguments, so a rewrite cannot slip past one', async () => {
+      const ctx = await setup()
+      ctx.tools.register(echoTool)
+      ctx.tools.guard(exec => String(textOf(exec)).includes('--force') ? 'force is not allowed' : undefined)
+      const rewriteTo = (text: string) => ctx.on('tools/pre-rewrite', async () => ({ kind: 'rewrite', arguments: { text }, notice }))
+      const call = () => executeToolFixture(ctx, {
+        signal: testToolSignal, callId: ToolCallId('c1'), name: 'echo', arguments: { text: 'push --force' },
+      })
+
+      const dispose = rewriteTo('push')
+      expect((await call()).value).toBe('push')
+      dispose()
+
+      rewriteTo('push --force --force')
+      const denied = await call()
+      expect(denied.isError).toBe(true)
+      expect(denied.content[0]).toMatchObject({ text: 'Error: force is not allowed' })
+    })
+
+    it('reports arguments that are not JSON as a failed call, not a crash', async () => {
+      const ctx = await setup()
+      ctx.tools.register(echoTool)
+      ctx.on('tools/pre-rewrite', async () => ({ kind: 'rewrite', arguments: { text: 1n }, notice }))
+      const result = await executeToolFixture(ctx, {
+        signal: testToolSignal, callId: ToolCallId('c1'), name: 'echo', arguments: { text: 'x' },
+      })
+      expect(result.isError).toBe(true)
+    })
+
+    it('leaves a call untouched when no listener rewrites', async () => {
+      const ctx = await setup()
+      ctx.tools.register(echoTool)
+      const result = await executeToolFixture(ctx, {
+        signal: testToolSignal, callId: ToolCallId('c1'), name: 'echo', arguments: { text: 'as typed' },
+      })
+      expect(result.value).toBe('as typed')
+      expect(result.additionalContexts ?? []).toEqual([])
+    })
+  })
+
   it('an ask decision degrades to deny when no approval seam is mounted', async () => {
     const ctx = await setup()
     ctx.tools.register(echoTool)

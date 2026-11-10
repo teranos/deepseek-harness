@@ -537,14 +537,28 @@ interface ToolErrorInfo {
  * the canonical cancellation result without presenting a policy denial; `ask`
  * runs only after an approval service returns `allowed-once` and otherwise
  * denies; its `reason` is the audited approval reason and its optional
- * `displayReason` is the localized prompt text. Input rewriting is excluded because arguments are already logged and
- * presented.
+ * `displayReason` is the localized prompt text. A decision never rewrites arguments: the call's identity is sealed
+ * before it, and `tools/pre-rewrite` owns rewriting earlier so that this policy judges the arguments that will run.
  */
 type PreToolDecision =
   | { kind: 'allow' }
   | { kind: 'deny'; reason: string; info?: ToolErrorInfo }
   | { kind: 'cancel' }
   | { kind: 'ask'; reason?: string; displayReason?: { readonly en: string; readonly [locale: string]: string } }
+```
+
+`tools/pre-rewrite` 最先运行并返回 `PreToolRewrite`。重写会用替换后的参数重新封存一个执行对象，因此 `tools/pre-execute` 监听器、审批、守卫和工具本体看到的都是实际运行的参数。`tool/call` 审计事件保留模型发出的参数，必填的 `notice` 则作为已记录的结果上下文送达模型：
+
+```ts type-equiv
+/**
+ * Pre-policy argument rewrite. `keep` runs the model's arguments. `rewrite` replaces them before any
+ * `tools/pre-execute` listener, guard, or tool body sees the call; the `tool/call` audit event keeps the arguments the
+ * model emitted. `notice` is required and reaches the model through the result's `additionalContexts`, so a rewrite
+ * is never silent to the model and is logged with the result.
+ */
+type PreToolRewrite =
+  | { kind: 'keep' }
+  | { kind: 'rewrite'; arguments: unknown; notice: UserMessage }
 ```
 
 ```ts type-equiv
@@ -831,6 +845,29 @@ Allow, deny, cancel, or ask before dispatch. `next()` delegates to allow; `cance
  * @mode waterfall
  */
 'tools/pre-execute'(this: Scoped<ToolsService>, exec: ToolExecution, next: () => Promise<PreToolDecision>): Promise<PreToolDecision>
+```
+
+Types: [Scoped](scope.zh.md)
+
+Source: [`packages/core/tools/src/events.ts`](../../packages/core/tools/src/events.ts)
+
+<a id="toolspre-rewrite--waterfall"></a>
+
+#### `tools/pre-rewrite` — waterfall
+
+Keep or rewrite a call's arguments before its identity is sealed and before any `tools/pre-execute` listener runs, so policy and approval judge the arguments that will execute. `next()` delegates to keep. The `tool/call` audit event retains the arguments the model emitted; the required `notice` reaches the model through the result's `additionalContexts`. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent's calls.
+
+```ts cordis-catalog
+/**
+ * Keep or rewrite a call's arguments before its identity is sealed and before any `tools/pre-execute`
+ * listener runs, so policy and approval judge the arguments that will execute. `next()` delegates to keep. The
+ * `tool/call` audit event retains the arguments the model emitted; the required `notice` reaches the model
+ * through the result's `additionalContexts`.
+ * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent's calls.
+ * @param exec - the pending call as the model emitted it (name, parsed arguments, caller agent).
+ * @mode waterfall
+ */
+'tools/pre-rewrite'(this: Scoped<ToolsService>, exec: ToolExecution, next: () => Promise<PreToolRewrite>): Promise<PreToolRewrite>
 ```
 
 Types: [Scoped](scope.zh.md)
