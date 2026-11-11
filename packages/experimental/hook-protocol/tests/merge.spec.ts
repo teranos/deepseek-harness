@@ -33,6 +33,17 @@ describe('mergeHookOutputs — permission precedence deny > ask > allow', () => 
   })
 })
 
+describe('mergeHookOutputs — updatedInput', () => {
+  it('takes the last hook in order that requested a replacement input', () => {
+    const m = mergeHookOutputs([out({ updatedInput: { command: 'a' } }), out(), out({ updatedInput: { command: 'b' } }), out()])
+    expect(m.updatedInput).toEqual({ command: 'b' })
+  })
+
+  it('omits updatedInput when no hook requested one', () => {
+    expect('updatedInput' in mergeHookOutputs([out(), out({ decision: 'allow' })])).toBe(false)
+  })
+})
+
 describe('mergeHookOutputs — reasons, stop, context, systemMessages accumulate', () => {
   it('joins block/deny reasons with a blank line (only from blocking hooks)', () => {
     const m = mergeHookOutputs([

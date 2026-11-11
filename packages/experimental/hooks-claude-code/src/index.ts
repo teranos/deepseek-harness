@@ -23,7 +23,7 @@ declare module '@deepseek-ai/dsh-llm' {
 
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
-import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import type { PostToolDecision, PreToolDecision, PreToolRewrite, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import {
   appendHookInvoked,
   appendHookResult,
@@ -177,8 +177,8 @@ export function apply(ctx: Context, config: Config): void {
           expectedEventName: point,
         }, () => performance.now())
         outputs.push(output)
-        if (output.updatedInput !== undefined) {
-          ctx.logger.warn(`hooks-claude-code: ${point} hook requested updatedInput, which is not yet honored (ignored)`)
+        if (output.updatedInput !== undefined && point !== 'PreToolUse') {
+          ctx.logger.warn(`hooks-claude-code: ${point} hook requested updatedInput, which only PreToolUse applies (ignored)`)
         }
         if (output.systemMessage !== undefined) {
           ctx.logger.warn(`hooks-claude-code: ${point} hook emitted a systemMessage, which is not yet surfaced (ignored)`)
@@ -239,10 +239,24 @@ export function apply(ctx: Context, config: Config): void {
     }
   })
 
-  // --- PreToolUse → PreToolDecision. Matcher subject is the tool name. ---
+  // --- PreToolUse → PreToolRewrite + PreToolDecision. Matcher subject is the tool name. ---
+  // The hooks run once, at tools/pre-rewrite, against the input the model emitted. Their merged
+  // outcome waits here, keyed by call, until tools/pre-execute applies its decision.
+  const preToolOutcomes = new Map<ToolExecution['callId'], MergedHookOutcome>()
+  ctx.effect(() => () => { preToolOutcomes.clear() }, 'hooks-claude-code: pending PreToolUse outcomes')
+  const runPreToolUse = (exec: ToolExecution): Promise<MergedHookOutcome> =>
+    runPoint('PreToolUse', exec.name, preToolPayload(exec), { ...exec.agent ? { agent: exec.agent } : {}, turn: lastTurn(ctx, exec.agent), signal: exec.signal })
+
+  ctx.on('tools/pre-rewrite', async (exec, next): Promise<PreToolRewrite> => {
+    const merged = await runPreToolUse(exec)
+    preToolOutcomes.set(exec.callId, merged)
+    if (merged.decision === 'deny' || merged.updatedInput === undefined) return next()
+    return { kind: 'rewrite', arguments: merged.updatedInput, notice: rewriteNotice(exec.name, merged.updatedInput, merged.additionalContext) }
+  })
+
   ctx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
-    const turn = lastTurn(ctx, exec.agent)
-    const merged = await runPoint('PreToolUse', exec.name, preToolPayload(exec), { ...exec.agent ? { agent: exec.agent } : {}, turn, signal: exec.signal })
+    const merged = preToolOutcomes.get(exec.callId) ?? await runPreToolUse(exec)
+    preToolOutcomes.delete(exec.callId)
     if (merged.decision === 'deny') return { kind: 'deny', reason: merged.reason ?? 'blocked by PreToolUse hook' }
     if (merged.decision === 'ask') return { kind: 'ask', ...merged.reason !== undefined ? { reason: merged.reason } : {} }
     return next()
@@ -340,6 +354,18 @@ function sessionStartPayload(agent: Agent, source: string): Record<string, unkno
 function promptPayload(agent: Agent, content: ContentBlock[]): Record<string, unknown> {
   return { ...base(agent, 'UserPromptSubmit'), prompt: blocksToText(content) }
 }
+/**
+ * Tell the model that a PreToolUse hook replaced a call's input, what ran instead, and why when the hooks said.
+ * @param tool - the tool whose input was replaced.
+ * @param ran - the replacement input the tool ran with.
+ * @param reasons - the hooks' `additionalContext`, in hook order.
+ * @returns the sourced notice the result carries to the model.
+ */
+function rewriteNotice(tool: string, ran: Record<string, unknown>, reasons: readonly string[]): UserMessage {
+  const text = [`A PreToolUse hook replaced the ${tool} input before it ran. It ran with: ${JSON.stringify(ran)}`, ...reasons].join('\n')
+  return createUserMessage({ content: [{ type: 'text', text }], source: CONTEXT_SOURCE })
+}
+
 function preToolPayload(exec: ToolExecution): Record<string, unknown> {
   return { ...base(exec.agent, 'PreToolUse'), tool_name: exec.name, tool_input: exec.arguments, tool_use_id: exec.callId }
 }
