@@ -5328,6 +5328,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [{ name: 'exec', description: 'the pending call (name, parsed arguments, caller agent).' }],
   },
   {
+    name: 'tools/pre-rewrite',
+    mode: 'waterfall',
+    signature: '\'tools/pre-rewrite\'(this: Scoped<ToolsService>, exec: ToolExecution, next: () => Promise<PreToolRewrite>): Promise<PreToolRewrite>',
+    summary: 'Keep or rewrite a call\'s arguments before its identity is sealed and before any `tools/pre-execute` listener runs, so policy and approval judge the arguments that will execute.',
+    description: 'Keep or rewrite a call\'s arguments before its identity is sealed and before any `tools/pre-execute` listener runs, so policy and approval judge the arguments that will execute. `next()` delegates to keep. The `tool/call` audit event retains the arguments the model emitted; the required `notice` reaches the model through the result\'s `additionalContexts`. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent\'s calls.',
+    parameters: [{ name: 'exec', description: 'the pending call as the model emitted it (name, parsed arguments, caller agent).' }],
+  },
+  {
     name: 'tools/ptc-dispatch-log',
     mode: 'waterfall',
     signature: '\'tools/ptc-dispatch-log\'(this: Scoped<ToolsService>, dispatch: PtcDispatchLog, next: () => Promise<ContentBlock[]>): Promise<ContentBlock[]>',
@@ -7682,6 +7690,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'PreToolDecision',
     declaration: 'export type PreToolDecision = {\n    kind: \'allow\';\n} | {\n    kind: \'deny\';\n    reason: string;\n    info?: ToolErrorInfo;\n} | {\n    kind: \'cancel\';\n} | {\n    kind: \'ask\';\n    reason?: string;\n    displayReason?: {\n        readonly en: string;\n        readonly [locale: string]: string;\n    };\n};',
+  },
+  {
+    name: 'PreToolRewrite',
+    declaration: 'export type PreToolRewrite = {\n    kind: \'keep\';\n} | {\n    kind: \'rewrite\';\n    arguments: unknown;\n    notice: UserMessage;\n};',
   },
   {
     name: 'Principal',

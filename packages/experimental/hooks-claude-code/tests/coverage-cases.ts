@@ -119,9 +119,10 @@ export function defineCoverageCases(group: CoverageGroup): void {
       expect(existsSync(marker)).toBe(true) // substituted command ran
     }, 15_000) // Real agent and hook subprocess startup can exceed Vitest's default under coverage concurrency.
 
-    it('warns and honors updatedInput as a no-op (input rewrite deferred)', async () => {
+    it('runs the tool with updatedInput, logs the original call and a notice, and runs the hook once', async () => {
       const d = dir()
-      const s = sh(d, 'u.sh', '#!/usr/bin/env bash\necho \'{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"rewritten"}}}\'\n')
+      const runs = join(d, 'runs')
+      const s = sh(d, 'u.sh', `#!/usr/bin/env bash\necho run >> '${runs}'\necho '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"rewritten"},"additionalContext":"ground removed --force"}}'\n`)
       const path = hooks(d, { PreToolUse: [{ hooks: [{ type: 'command', command: s }] }] })
       const warn = vi.fn()
       const adapter = new MockAdapter([toolCallResponse('c1', 'echo', { command: 'original' }), textResponse('done')])
@@ -132,9 +133,71 @@ export function defineCoverageCases(group: CoverageGroup): void {
       const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
       agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
       await waitForIdle(ctx, agent)
-      // updatedInput is NOT honored — the tool ran with the ORIGINAL args.
-      expect((sawArgs as { command?: string }).command).toBe('original')
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('updatedInput'))
+
+      expect(sawArgs).toEqual({ command: 'rewritten' })
+      expect(readFileSync(runs, 'utf8')).toBe('run\n')
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('updatedInput'))
+      const log = events(agent)
+      const call = log.find(e => e.type === 'tool/call')
+      expect(call?.type === 'tool/call' ? call.data.arguments : undefined).toBe(JSON.stringify({ command: 'original' }))
+      const notices = log.filter(e => e.type === 'user/message').map(e => JSON.stringify(e))
+      expect(notices.some(n => n.includes('rewritten') && n.includes('ground removed --force'))).toBe(true)
+    })
+
+    it('a deny from one hook wins over another hook\'s updatedInput', async () => {
+      const d = dir()
+      const rewrite = sh(d, 'r.sh', '#!/usr/bin/env bash\necho \'{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":"rewritten"}}}\'\n')
+      const deny = sh(d, 'd.sh', '#!/usr/bin/env bash\necho \'{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"no force pushes"}}\'\n')
+      const path = hooks(d, { PreToolUse: [{ hooks: [{ type: 'command', command: rewrite }, { type: 'command', command: deny }] }] })
+      const adapter = new MockAdapter([toolCallResponse('c1', 'echo', { command: 'original' }), textResponse('done')])
+      const ctx = await harness(path, adapter)
+      let ran = false
+      ctx.tools.register(defineContentToolFixture({ name: 'echo', description: 'e', parameters: { command: { type: 'string' } }, async execute() { ran = true; return [{ type: 'text', text: 'ok' }] } }))
+      const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+      await waitForIdle(ctx, agent)
+
+      expect(ran).toBe(false)
+      expect(JSON.stringify(events(agent).find(e => e.type === 'tool/result'))).toContain('no force pushes')
+    })
+
+    it('runs PreToolUse at pre-execute, on the input that will run, when an earlier rewrite does not delegate', async () => {
+      const d = dir()
+      const seen = join(d, 'seen')
+      const s = sh(d, 'p.sh', `#!/usr/bin/env bash\ncat >> '${seen}'\necho '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"checked"}}'\n`)
+      const path = hooks(d, { PreToolUse: [{ hooks: [{ type: 'command', command: s }] }] })
+      const adapter = new MockAdapter([toolCallResponse('c1', 'echo', { command: 'original' }), textResponse('done')])
+      const ctx = await harness(path, adapter)
+      ctx.on('tools/pre-rewrite', async () => ({
+        kind: 'rewrite', arguments: { command: 'from-policy' },
+        notice: createUserMessage({ content: [{ type: 'text', text: 'policy rewrote' }], source: { kind: 'policy' } }),
+      }), true)
+      let ran = false
+      ctx.tools.register(defineContentToolFixture({ name: 'echo', description: 'e', parameters: { command: { type: 'string' } }, async execute() { ran = true; return [{ type: 'text', text: 'ok' }] } }))
+      const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+      await waitForIdle(ctx, agent)
+
+      const payloads = readFileSync(seen, 'utf8').trim().split('\n')
+      expect(payloads).toHaveLength(1)
+      expect(JSON.parse(payloads[0]!)).toMatchObject({ tool_input: { command: 'from-policy' } })
+      expect(ran).toBe(false)
+    })
+
+    it('warns that updatedInput from a non-PreToolUse hook is ignored', async () => {
+      const d = dir()
+      const s = sh(d, 'post.sh', '#!/usr/bin/env bash\necho \'{"hookSpecificOutput":{"hookEventName":"PostToolUse","updatedInput":{"command":"x"}}}\'\n')
+      const path = hooks(d, { PostToolUse: [{ hooks: [{ type: 'command', command: s }] }] })
+      const warn = vi.fn()
+      const adapter = new MockAdapter([toolCallResponse('c1', 'echo', { command: 'original' }), textResponse('done')])
+      const ctx = await harness(path, adapter)
+      ctx.logger.warn = warn as never
+      ctx.tools.register(defineContentToolFixture({ name: 'echo', description: 'e', parameters: { command: { type: 'string' } }, async execute() { return [{ type: 'text', text: 'ok' }] } }))
+      const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+      await waitForIdle(ctx, agent)
+
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('PostToolUse hook requested updatedInput, which only PreToolUse applies'))
     })
   })
 

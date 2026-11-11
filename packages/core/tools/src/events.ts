@@ -1,10 +1,20 @@
 /** Tool contribution changes and shared execution policy events. @module */
 import type { Scoped } from '@deepseek-ai/dsh-scope'
-import type { ToolExecution, ToolDispatchExecution, ToolExecutionResult, PreToolDecision, PostToolDecision } from './contracts.ts'
+import type { ToolExecution, ToolDispatchExecution, ToolExecutionResult, PreToolDecision, PreToolRewrite, PostToolDecision } from './contracts.ts'
 import type { ToolsService } from './index.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Events {
+    /**
+     * Keep or rewrite a call's arguments before its identity is sealed and before any `tools/pre-execute`
+     * listener runs, so policy and approval judge the arguments that will execute. `next()` delegates to keep. The
+     * `tool/call` audit event retains the arguments the model emitted; the required `notice` reaches the model
+     * through the result's `additionalContexts`.
+     * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent's calls.
+     * @param exec - the pending call as the model emitted it (name, parsed arguments, caller agent).
+     * @mode waterfall
+     */
+    'tools/pre-rewrite'(this: Scoped<ToolsService>, exec: ToolExecution, next: () => Promise<PreToolRewrite>): Promise<PreToolRewrite>
     /**
      * Allow, deny, cancel, or ask before dispatch. `next()` delegates to allow;
      * `cancel` selects the canonical pre-dispatch cancellation result, and missing

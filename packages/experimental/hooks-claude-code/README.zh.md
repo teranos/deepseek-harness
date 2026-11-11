@@ -59,7 +59,7 @@ kind: "package-reference"
 |---|---|---|
 | `SessionStart` | 会话开始时 | 附加该会话中模型可见的上下文 |
 | `UserPromptSubmit` | agent 收到提示词时 | 阻塞提示词，或附加上下文 |
-| `PreToolUse` | 工具运行前 | 阻塞工具，或在运行前请求批准 |
+| `PreToolUse` | 工具运行前 | 阻塞工具、在运行前请求批准，或替换其输入 |
 | `PostToolUse` | 工具运行后 | 带反馈阻塞结果，或附加上下文 |
 | `Stop` | 运行即将停止时 | 带原因强制再执行一步 |
 | `SubagentStart` | subagent 启动时 | 向仍在运行的 subagent 附加上下文（仅限同进程） |
@@ -86,7 +86,7 @@ kind: "package-reference"
 
 ### Hook 点映射
 
-每个受支持事件都面向一个 harness 扩展点：`SessionStart` 在首个轮次前通过需等待的 `agent/created` 初始化加入上下文，`UserPromptSubmit` 与 `PreToolUse` 是能拒绝传入动作的 waterfall（瀑布式事件）（`agent/pre-step`、`tools/pre-execute`），`PostToolUse` 是能带反馈阻塞或向下游决策添加上下文的 waterfall（`tools/post-execute`），`Stop` 是串行监听器，其阻塞结果通过 `steer()` 强制再执行一步（`agent/turn-stopping`）。两个 subagent 事件面向 child 生命周期发射（`subagent/start`、`subagent/end`）：start 向仍在运行的同进程 child 注入上下文，stop 只观测。仅提供上下文的 hook 总是先通过 `next()` 委托，再把带来源的消息折叠进下游决策，因此后续监听器仍可拒绝或改写；阻塞决策映射为 `deny`（`PreToolUse` 为 `ask`）。逐事件接线位于 [`src/index.ts`](src/index.ts)。
+每个受支持事件都面向一个 harness 扩展点：`SessionStart` 在首个轮次前通过需等待的 `agent/created` 初始化加入上下文，`UserPromptSubmit` 与 `PreToolUse` 是能拒绝传入动作的 waterfall（瀑布式事件）（`agent/pre-step`、`tools/pre-execute`），`PreToolUse` 只在 `tools/pre-rewrite` 运行一次，并在策略之前于该处应用 `updatedInput`，再把决策留给 `tools/pre-execute`，`PostToolUse` 是能带反馈阻塞或向下游决策添加上下文的 waterfall（`tools/post-execute`），`Stop` 是串行监听器，其阻塞结果通过 `steer()` 强制再执行一步（`agent/turn-stopping`）。两个 subagent 事件面向 child 生命周期发射（`subagent/start`、`subagent/end`）：start 向仍在运行的同进程 child 注入上下文，stop 只观测。仅提供上下文的 hook 总是先通过 `next()` 委托，再把带来源的消息折叠进下游决策，因此后续监听器仍可拒绝或改写；阻塞决策映射为 `deny`（`PreToolUse` 为 `ask`）。逐事件接线位于 [`src/index.ts`](src/index.ts)。
 
 ### 载荷与环境
 
@@ -155,7 +155,7 @@ hook 不返回上下文时没有成本。Hook 文本取决于数据，会被记�
 
 #### 模型看到什么
 
-提供方提供的原因逐字传递。缺失原因时，已拒绝工具变为 `Error: blocked by PreToolUse hook`，已阻塞工具后反馈精确为 `blocked by PostToolUse hook`，阻塞 stop 则精确添加 steering `continue: blocked by Stop hook`；已阻塞提示词不会产生任何模型可见消息，而是以 `blocked` 结束该轮次。`systemMessage` 与 `updatedInput` 会被记录或警告，但在此实现中对模型不可见。
+提供方提供的原因逐字传递。缺失原因时，已拒绝工具变为 `Error: blocked by PreToolUse hook`，已阻塞工具后反馈精确为 `blocked by PostToolUse hook`，阻塞 stop 则精确添加 steering `continue: blocked by Stop hook`；已阻塞提示词不会产生任何模型可见消息，而是以 `blocked` 结束该轮次。`systemMessage` 会被记录并警告，但在此实现中对模型不可见。当 `updatedInput` 替换工具输入时，模型会收到 `A PreToolUse hook replaced the <tool> input before it ran. It ran with: <input>`，其后是每个 hook 的 `additionalContext`，作为已记录的结果上下文；`tool/call` 事件保留模型发出的输入。
 
 #### Token 影响
 
@@ -175,7 +175,7 @@ hook 不返回上下文时没有成本。Hook 文本取决于数据，会被记�
 - **不支持的 hook 事件（Claude Code 当前 30 项中的 23 项）**——`Setup`、`InstructionsLoaded`、`UserPromptExpansion`、`MessageDisplay`、`PermissionRequest`、`PostToolUseFailure`、`PostToolBatch`、`PermissionDenied`、`Notification`、`TaskCreated`、`TaskCompleted`、`StopFailure`、`TeammateIdle`、`ConfigChange`、`CwdChanged`、`FileChanged`、`WorktreeCreate`、`WorktreeRemove`、`PreCompact`、`PostCompact`、`SessionEnd`、`Elicitation` 与 `ElicitationResult`。这些事件的配置会在配置组解析前被忽略，因此不支持的事件既不会使配置失效，也不会注册 hook。比较基线是 Claude Code [官方 hook 事件参考](https://code.claude.com/docs/en/hooks#hook-events)。
 - **`SessionStart` 只支持部分功能**——会消费 JSON `additionalContext`，但不支持纯 stdout 上下文、`initialUserMessage`、`sessionTitle`、`watchPaths`、`reloadSkills` 与 `CLAUDE_ENV_FILE`。hook 脱离运行，因此上下文可能错过第一个请求，payload 会省略 `model`、`agent_type` 与 `session_title` 等可选字段。
 - **`UserPromptSubmit` 只支持部分功能**——支持阻塞与 JSON `additionalContext`，但不支持纯 stdout 上下文、`sessionTitle` 与 `suppressOriginalPrompt`。除非被覆盖，否则桥接还会使用自身 600 秒默认值，而非 Claude Code 的事件特定 30 秒 command 超时。
-- **`PreToolUse` 只支持部分功能**——`deny` 与 `ask` 决策可用；`allow` 不会预审批，`defer` 不受支持，`additionalContext` 会被忽略，`updatedInput` 会被记录 + 警告但不应用（见 [pre-tool-input-rewrite Agent Note](../../../.agents/notes/proposed/feature/2026-06-30-pre-tool-input-rewrite.zh.md)）。
+- **`PreToolUse` 只支持部分功能**——`deny` 与 `ask` 决策可用；`allow` 不会预审批，`defer` 不受支持，除非设置了 `updatedInput`，否则 `additionalContext` 会被忽略。`updatedInput` 会让工具以替换后的输入运行，但 `tool/call` 事件、历史与界面卡片保留模型发出的输入（[pre-tool-input-rewrite Agent Note](../../../.agents/notes/proposed/feature/2026-06-30-pre-tool-input-rewrite.zh.md) 提议同时改写它们）；多个 hook 设置它时，以配置顺序中的最后一个为准。
 - **`PostToolUse` 只支持部分功能**——支持阻塞反馈与 JSON `additionalContext`，但不支持 `updatedToolOutput` 与 `updatedMCPToolOutput`，`tool_response` 会展平为文本。
 - **`SubagentStart` 与 `SubagentStop` 只支持部分功能**——两者均报告常量 `agent_type` `general-purpose`，并在 Claude Code 报告父会话的位置使用 child 会话 id。Start 上下文是尽力而为，且只能到达仍在运行的同进程 child；stop 只观测，无法阻塞 subagent 或向其提供上下文。Stop 省略 `agent_transcript_path`、`last_assistant_message`、`background_tasks` 与 `session_crons`，并始终报告 `stop_hook_active: false`。
 - **`Stop` 只支持部分功能**——阻塞会强制另一个模型轮次，但 `stop_hook_active` 始终为 `false`，会省略 `last_assistant_message`、`background_tasks` 与 `session_crons`，且未实现连续阻塞上限。因此，无条件阻塞 hook 会在每个步骤中强制 continuation，除非它自我限制。

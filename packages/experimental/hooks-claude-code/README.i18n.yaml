@@ -24,8 +24,8 @@
   en: b2724490aee1f8e0
   zh: abbcb0eebb3207a4
 /deepseek-ai-dsh-hooks-claude-code/use-this-package/what-your-hooks-can-do:
-  en: 6c3b126e6607c311
-  zh: 33199f443edb2824
+  en: 7fe03bb708f11757
+  zh: 913b584a9fe85bc1
 /deepseek-ai-dsh-hooks-claude-code/use-this-package/how-hooks-run-and-fail:
   en: d2da19a016554a19
   zh: 5c579bc80b04e7a4
@@ -33,8 +33,8 @@
   en: d33ddd080880b3f5
   zh: 64328f5239c26752
 /deepseek-ai-dsh-hooks-claude-code/understand-the-implementation/hook-point-mapping:
-  en: d315f54ec60f8860
-  zh: 53b7a6531d9f4bbb
+  en: fadda7fa39061e02
+  zh: 79495e412ddd342a
 /deepseek-ai-dsh-hooks-claude-code/understand-the-implementation/payloads-and-environment:
   en: 0389b516653c7f45
   zh: 15ec2182113a9aa4
@@ -72,8 +72,8 @@
   en: 82be8d95921ef639
   zh: 11c185068ec18932
 /deepseek-ai-dsh-hooks-claude-code/model-experience/blocked-prompt-or-tool-outcome/what-the-model-sees:
-  en: 1313b662532a2bda
-  zh: 4002d38540286a94
+  en: d6c176bbf9081bb6
+  zh: 2c1ead843602a69d
 /deepseek-ai-dsh-hooks-claude-code/model-experience/blocked-prompt-or-tool-outcome/token-effect:
   en: 7c13e10d2a0e3151
   zh: 54ffd88bca4fce3a
@@ -81,8 +81,8 @@
   en: f84fa6c0511cd113
   zh: f6ce9cdd47a72684
 /deepseek-ai-dsh-hooks-claude-code/known-limitations-and-deferred-work:
-  en: 23ab8cf19542ea03
-  zh: e56f896b4393c1c5
+  en: 2bee280c46e19565
+  zh: 7661ffefdd8e22b7
 /deepseek-ai-dsh-hooks-claude-code/known-limitations-and-deferred-work/dev-note:
   en: b1e9a373ae8b7bb0
   zh: 30446fe59d5ec8be

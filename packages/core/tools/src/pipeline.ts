@@ -10,7 +10,7 @@ import { assertNever, deepFreeze, snapshotJsonValue, type JsonValue } from '@dee
 import { TOOL_ABORTED, TOOL_ABORTED_BEFORE_DISPATCH, ToolNotFoundError, ToolOutputError } from './contracts.ts'
 import { validateJsonSchemaValue } from './json-schema.ts'
 import type { ToolsService } from './index.ts'
-import type { ResolvedToolSet, ToolDefinition, ToolExecutionInput, ToolExecutionMode, ToolExecution, ToolRunContext, ToolExecutionResult, ToolExecutionSuccess, ToolErrorInfo, ToolExecutionToken, PreToolDecision, PostToolDecision } from './contracts.ts'
+import type { ResolvedToolSet, ToolDefinition, ToolExecutionInput, ToolExecutionMode, ToolExecution, ToolRunContext, ToolExecutionResult, ToolExecutionSuccess, ToolErrorInfo, ToolExecutionToken, PreToolDecision, PreToolRewrite, PostToolDecision } from './contracts.ts'
 
 /** Executor-owned lookup and restrictions applied before extensible execution policy. */
 export interface ToolExecutionSource {
@@ -182,20 +182,32 @@ export class ToolExecutionPipeline {
   }
 
   /**
-   * Snapshot input, assign its correlation token, and run ordered pre-execute
-   * policy and guards. Cancellation skips a body that has not started.
+   * Snapshot input, assign its correlation token, run `tools/pre-rewrite`, then
+   * ordered pre-execute policy and guards over the effective arguments.
+   * Cancellation skips a body that has not started.
    * @param input - the caller-supplied execution input.
    * @returns the prepared execution plus the next scheduler stage.
    */
   async prepare(input: ToolExecutionInput): Promise<ScheduledToolPreparation> {
     const created = this.createExecution(input)
     if (created.kind !== 'ready') return created
-    const exec = created.exec
+    let exec = created.exec
     if (this.callerCancelled(exec)) {
       return { kind: 'final-result', exec, result: toolAbortedBeforeDispatchResult() }
     }
     try {
       const carrier = scopeTarget(this.tools, exec.agent)
+      const rewrite = await this.ctx.waterfall(
+        carrier, 'tools/pre-rewrite', exec,
+        () => Promise.resolve<PreToolRewrite>({ kind: 'keep' }),
+      )
+      if (rewrite.kind === 'rewrite') {
+        // The effective execution is sealed again, so policy, guards, and the body all see the rewritten arguments.
+        const effective = this.createExecution({ ...input, arguments: rewrite.arguments })
+        if (effective.kind !== 'ready') return effective
+        exec = effective.exec
+        this.deferredContexts.get(exec)?.push(rewrite.notice)
+      }
       const gate = await this.ctx.waterfall(
         carrier, 'tools/pre-execute', exec,
         () => Promise.resolve<PreToolDecision>({ kind: 'allow' }),
