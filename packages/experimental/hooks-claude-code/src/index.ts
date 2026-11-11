@@ -241,9 +241,12 @@ export function apply(ctx: Context, config: Config): void {
 
   // --- PreToolUse → PreToolRewrite + PreToolDecision. Matcher subject is the tool name. ---
   // The hooks run once, at tools/pre-rewrite, against the input the model emitted. Their merged
-  // outcome waits here, keyed by call, until tools/pre-execute applies its decision.
+  // outcome waits here, keyed by call, until tools/pre-execute applies its decision. When an earlier
+  // pre-rewrite listener settles the rewrite without delegating, the hooks run at pre-execute instead,
+  // against the input that will run. A call that settles before pre-execute drops its entry.
   const preToolOutcomes = new Map<ToolExecution['callId'], MergedHookOutcome>()
   ctx.effect(() => () => { preToolOutcomes.clear() }, 'hooks-claude-code: pending PreToolUse outcomes')
+  ctx.on('tools/result', (exec) => { preToolOutcomes.delete(exec.callId) })
   const runPreToolUse = (exec: ToolExecution): Promise<MergedHookOutcome> =>
     runPoint('PreToolUse', exec.name, preToolPayload(exec), { ...exec.agent ? { agent: exec.agent } : {}, turn: lastTurn(ctx, exec.agent), signal: exec.signal })
 
@@ -255,8 +258,9 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   ctx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
-    const merged = preToolOutcomes.get(exec.callId) ?? await runPreToolUse(exec)
+    const cached = preToolOutcomes.get(exec.callId)
     preToolOutcomes.delete(exec.callId)
+    const merged = await (cached === undefined ? runPreToolUse(exec) : Promise.resolve(cached))
     if (merged.decision === 'deny') return { kind: 'deny', reason: merged.reason ?? 'blocked by PreToolUse hook' }
     if (merged.decision === 'ask') return { kind: 'ask', ...merged.reason !== undefined ? { reason: merged.reason } : {} }
     return next()
